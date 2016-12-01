@@ -84,8 +84,8 @@ namespace ChangeRevision
         /// <returns>If there is GIT client installed</returns>
         private static bool CheckGit()
         {
-            string gitPath = CheckPath("\\git");
-            if (gitPath == null)
+            string gitPath = CheckPath("\\git", "git.exe");
+            if (string.IsNullOrEmpty(gitPath))
             {
                 Console.WriteLine("No GIT found! Version autoincrement failed");
                 Console.ReadLine();
@@ -103,8 +103,9 @@ namespace ChangeRevision
         /// 
         /// </summary>
         /// <param name="searchFor">Keyword</param>
+        /// <param name="binaryName">Binary file name</param>
         /// <returns>Full path to the sought binary</returns>
-        private static string CheckPath(string searchFor)
+        private static string CheckPath(string searchFor, string binaryName = null)
         {
             string sysPath = string.Empty;
             string subLine = string.Empty;
@@ -117,14 +118,20 @@ namespace ChangeRevision
                 Console.WriteLine($"Can\'t locate \"{searchFor}\": {ex.Message}");
                 Console.ReadLine();
             }
+            if (string.IsNullOrEmpty(sysPath)) return null;
 
-            foreach (
-                var line in
-                    from line in sysPath.Split(';')
-                    let found = line.ToLower().Contains(searchFor)
-                    where found
-                    select line)
-                subLine = line;
+            if (string.IsNullOrEmpty(binaryName))
+                foreach (
+                    var line in
+                        from line in sysPath.Split(';')
+                        let found = line.ToLower().Contains(searchFor)
+                        where found
+                        select line)
+                    subLine = line;
+            else
+                foreach (string line in sysPath.Split(';').Where(l => l.ToLower().Contains(searchFor)).Where(line => File.Exists(Path.Combine(line, binaryName))))
+                    subLine = line;
+
             return subLine;
         }
     }
