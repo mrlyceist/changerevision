@@ -11,6 +11,9 @@ namespace ChangeRevision
 {
     class Program
     {
+        /// <summary>
+        /// Full path to GIT executable
+        /// </summary>
         private static string _gitFile;
 
         static void Main(string[] args)
@@ -75,6 +78,10 @@ namespace ChangeRevision
             }
         }
 
+        /// <summary>
+        /// Looks for GIT in <ui>%PATH%</ui>
+        /// </summary>
+        /// <returns>If there is GIT client installed</returns>
         private static bool CheckGit()
         {
             string gitPath = CheckPath("\\git");
@@ -91,6 +98,12 @@ namespace ChangeRevision
             }
         }
 
+        /// <summary>
+        /// Searches for mention of something in <ui>%PATH%</ui> by dividing it on substrings.
+        /// 
+        /// </summary>
+        /// <param name="searchFor">Keyword</param>
+        /// <returns>Full path to the sought binary</returns>
         private static string CheckPath(string searchFor)
         {
             string sysPath = string.Empty;
@@ -101,7 +114,7 @@ namespace ChangeRevision
             }
             catch (SecurityException ex)
             {
-                Console.WriteLine($"Can\'t locate GIT: {ex.Message}");
+                Console.WriteLine($"Can\'t locate \"{searchFor}\": {ex.Message}");
                 Console.ReadLine();
             }
 
