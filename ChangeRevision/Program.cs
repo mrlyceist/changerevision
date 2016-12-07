@@ -23,51 +23,57 @@ namespace ChangeRevision
             if (!CheckGit()) return;
             try
             {
-                Process process = new Process
+                var countArguments = @"rev-list master --count";
+                var branchArguments = @"branch";
+
+                Process countProcess = new Process
                 {
                     StartInfo =
                     {
                         WorkingDirectory = Environment.CurrentDirectory,
                         FileName = _gitFile,
-                        Arguments = @"rev-list master --count",
+                        Arguments = countArguments,
                         UseShellExecute = false,
                         RedirectStandardOutput = true,
                         RedirectStandardError = true
                     }
                 };
 
-                StringBuilder output = new StringBuilder();
-                const int timeout = 10000;
-
-                using (AutoResetEvent outputWaitHandle = new AutoResetEvent(false))
-                using (AutoResetEvent errorWaitHandle = new AutoResetEvent(false))
+                Process branchProcess = new Process()
                 {
-                    process.OutputDataReceived += (sender, e) =>
+                    StartInfo =
                     {
-                        if (e.Data == null)
-                            outputWaitHandle.Set();
-                        else
-                            output.AppendLine(e.Data);
-                    };
+                        WorkingDirectory = Environment.CurrentDirectory,
+                        FileName = _gitFile,
+                        Arguments = branchArguments,
+                        UseShellExecute = false,
+                        RedirectStandardOutput = true,
+                        RedirectStandardError = true
+                    }
+                };
 
-                    process.Start();
-                    process.BeginOutputReadLine();
-
-                    if (!process.WaitForExit(timeout) || !outputWaitHandle.WaitOne(timeout)) return;
-                    string text = File.ReadAllText(@"..\..\..\" + args[1] + @"\Properties\AssemblyInfo.cs");
-
-                    Match match = new Regex("AssemblyVersion\\(\"(.*?)\"\\)").Match(text);
-                    Version ver = new Version(match.Groups[1].Value);
-                    int build = args[0] == "Release" ? ver.Build + 1 : ver.Build;
-                    Version newVer = new Version(ver.Major, ver.Minor, build, Convert.ToInt16(output.ToString().Trim()));
-
-                    text = Regex.Replace(text, @"AssemblyVersion\((.*?)\)", "AssemblyVersion(\"" + newVer.ToString() + "\")");
-                    text = Regex.Replace(text, @"AssemblyFileVersionAttribute\((.*?)\)", "AssemblyFileVersionAttribute(\"" + newVer.ToString() + "\")");
-                    text = Regex.Replace(text, @"AssemblyFileVersion\((.*?)\)", "AssemblyFileVersion(\"" + newVer.ToString() + "\")");
-
-                    File.WriteAllText(@"..\..\..\" + args[1] + @"\Properties\AssemblyInfo.cs", text);
-                    Console.WriteLine($"Success version increment. New version number is {newVer}");
+                var branchOutput = GetProcessOutput(branchProcess);
+                if (!IsOnMaster(branchOutput))
+                {
+                    Console.WriteLine("Not on master, won't change revision.");
+                    return;
                 }
+
+                var output = GetProcessOutput(countProcess);
+
+                string text = File.ReadAllText(@"..\..\..\" + args[1] + @"\Properties\AssemblyInfo.cs");
+
+                Match match = new Regex("AssemblyVersion\\(\"(.*?)\"\\)").Match(text);
+                Version ver = new Version(match.Groups[1].Value);
+                int build = args[0] == "Release" ? ver.Build + 1 : ver.Build;
+                Version newVer = new Version(ver.Major, ver.Minor, build, Convert.ToInt16(output.ToString().Trim()));
+
+                text = Regex.Replace(text, @"AssemblyVersion\((.*?)\)", "AssemblyVersion(\"" + newVer.ToString() + "\")");
+                text = Regex.Replace(text, @"AssemblyFileVersionAttribute\((.*?)\)", "AssemblyFileVersionAttribute(\"" + newVer.ToString() + "\")");
+                text = Regex.Replace(text, @"AssemblyFileVersion\((.*?)\)", "AssemblyFileVersion(\"" + newVer.ToString() + "\")");
+
+                File.WriteAllText(@"..\..\..\" + args[1] + @"\Properties\AssemblyInfo.cs", text);
+                Console.WriteLine($"Success version increment. New version number is {newVer}");
             }
             catch (Exception ex)
             {
@@ -76,6 +82,47 @@ namespace ChangeRevision
                 Console.WriteLine(ex.StackTrace);
                 Console.ReadLine();
             }
+        }
+
+        /// <summary>
+        /// </summary>
+        /// <param name="output"></param>
+        /// <returns></returns>
+        private static bool IsOnMaster(StringBuilder output)
+        {
+            return output.ToString().Split('\r').Any(s => s == "* master");
+        }
+
+        /// <summary>
+        /// Starts <c>process</c> with arguments and reads it's output
+        /// </summary>
+        /// <param name="process"><c>Process</c> to start</param>
+        /// <returns>Output of <c>process</c></returns>
+        private static StringBuilder GetProcessOutput(Process process)
+        {
+            StringBuilder output = new StringBuilder();
+            const int timeout = 10000;
+
+            using (AutoResetEvent outputWaitHandle = new AutoResetEvent(false))
+            using (AutoResetEvent errorWaitHandle = new AutoResetEvent(false))
+            {
+                process.OutputDataReceived += (sender, e) =>
+                {
+                    if (e.Data == null)
+                        outputWaitHandle.Set();
+                    else
+                    {
+                        output.AppendLine(e.Data);
+                    }
+                };
+
+                process.Start();
+                process.BeginOutputReadLine();
+
+                if (!process.WaitForExit(timeout) || !outputWaitHandle.WaitOne(timeout)) return output;
+                return output;
+            }
+
         }
 
         /// <summary>
