@@ -2,36 +2,41 @@
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
-using System.Security;
 using System.Text;
 using System.Text.RegularExpressions;
-using System.Threading;
+using System.Xml.Linq;
 
 namespace ChangeRevision
 {
     class Program
     {
-        /// <summary>
-        /// Full path to GIT executable
-        /// </summary>
-        private static string _gitFile;
-
         static void Main(string[] args)
         {
-            CheckGit();
+            if (args.Length < 2)
+            {
+                Console.WriteLine("Not enough arguments provided. Please, refer to documentation");
+                return;
+            }
 
-            if (!CheckGit()) return;
+            var buildConfigName = args[0];
+            var projectName = args[1];
+
+            var gitFile = Utilities.CheckGit();
+
+            if (string.IsNullOrEmpty(gitFile))
+                return;
+
             try
             {
                 var countArguments = @"rev-list master --count";
                 var branchArguments = @"branch";
 
-                Process countProcess = new Process
+                var countProcess = new Process
                 {
                     StartInfo =
                     {
                         WorkingDirectory = Environment.CurrentDirectory,
-                        FileName = _gitFile,
+                        FileName = gitFile,
                         Arguments = countArguments,
                         UseShellExecute = false,
                         RedirectStandardOutput = true,
@@ -39,12 +44,12 @@ namespace ChangeRevision
                     }
                 };
 
-                Process branchProcess = new Process()
+                var branchProcess = new Process()
                 {
                     StartInfo =
                     {
                         WorkingDirectory = Environment.CurrentDirectory,
-                        FileName = _gitFile,
+                        FileName = gitFile,
                         Arguments = branchArguments,
                         UseShellExecute = false,
                         RedirectStandardOutput = true,
@@ -52,28 +57,38 @@ namespace ChangeRevision
                     }
                 };
 
-                var branchOutput = GetProcessOutput(branchProcess);
-                if (!IsOnMaster(branchOutput))
+                var branchOutput = Utilities.GetProcessOutput(branchProcess);
+                //if (!Utilities.IsOnMaster(branchOutput))
+                //{
+                //    Console.WriteLine("Not on master, won't change revision.");
+                //    return;
+                //}
+
+                var versionStringBuilder = Utilities.GetProcessOutput(countProcess);
+
+                var projectDir = new DirectoryInfo(".\\");
+
+                if (projectDir.FullName.Contains($@"bin\{buildConfigName}"))
+                    projectDir = projectDir.Parent?.Parent;
+
+                if (projectDir == null)
+                    throw new ArgumentException("No project directory found");
+
+                var projectFile = projectDir.GetFiles($@".\{projectName}.csproj").FirstOrDefault();
+
+                var isNewStandard = IsNewStandard(projectFile);
+
+                string newVersion = null;
+                if (isNewStandard)
+                    newVersion = UpdateProjectFile(buildConfigName, projectFile, versionStringBuilder);
+                else
                 {
-                    Console.WriteLine("Not on master, won't change revision.");
-                    return;
+                    var assemblyInfoPath = $@"..\..\..\{projectName}\Properties\AssemblyInfo.cs";
+                    newVersion = UpdateAssemblyInfo(buildConfigName, projectName, assemblyInfoPath,
+                        versionStringBuilder);
                 }
 
-                var output = GetProcessOutput(countProcess);
-
-                string text = File.ReadAllText(@"..\..\..\" + args[1] + @"\Properties\AssemblyInfo.cs");
-
-                Match match = new Regex("AssemblyVersion\\(\"(.*?)\"\\)").Match(text);
-                Version ver = new Version(match.Groups[1].Value);
-                int build = args[0] == "Release" ? ver.Build + 1 : ver.Build;
-                Version newVer = new Version(ver.Major, ver.Minor, build, Convert.ToInt16(output.ToString().Trim()));
-
-                text = Regex.Replace(text, @"AssemblyVersion\((.*?)\)", "AssemblyVersion(\"" + newVer.ToString() + "\")");
-                text = Regex.Replace(text, @"AssemblyFileVersionAttribute\((.*?)\)", "AssemblyFileVersionAttribute(\"" + newVer.ToString() + "\")");
-                text = Regex.Replace(text, @"AssemblyFileVersion\((.*?)\)", "AssemblyFileVersion(\"" + newVer.ToString() + "\")");
-
-                File.WriteAllText(@"..\..\..\" + args[1] + @"\Properties\AssemblyInfo.cs", text);
-                Console.WriteLine($"Success version increment. New version number is {newVer}");
+                Console.WriteLine($"Success version increment. New version number is {newVersion}");
             }
             catch (Exception ex)
             {
@@ -84,102 +99,102 @@ namespace ChangeRevision
             }
         }
 
-        /// <summary>
-        /// </summary>
-        /// <param name="output"></param>
-        /// <returns></returns>
-        private static bool IsOnMaster(StringBuilder output)
+        private static string UpdateProjectFile(string buildConfigName, FileInfo projectFile, StringBuilder versionStringBuilder)
         {
-            return output.ToString().Split('\r').Any(s => s == "* master");
-        }
+            var xDoc = XDocument.Load(projectFile.FullName);
 
-        /// <summary>
-        /// Starts <c>process</c> with arguments and reads it's output
-        /// </summary>
-        /// <param name="process"><c>Process</c> to start</param>
-        /// <returns>Output of <c>process</c></returns>
-        private static StringBuilder GetProcessOutput(Process process)
-        {
-            StringBuilder output = new StringBuilder();
-            const int timeout = 10000;
+            var assemblyVersionElement = xDoc
+                .Descendants()
+                .FirstOrDefault(x => x.Name.LocalName == "AssemblyVersion");
+            var fileVersionElement = xDoc
+                .Descendants()
+                .FirstOrDefault(x => x.Name.LocalName == "FileVersion");
+            if (assemblyVersionElement == null || fileVersionElement == null)
+                throw new Exception("Fill \"Assembly version\" and \"Assembly file Version\" fields first");
 
-            using (AutoResetEvent outputWaitHandle = new AutoResetEvent(false))
-            using (AutoResetEvent errorWaitHandle = new AutoResetEvent(false))
+            var generatePackageElement = xDoc
+                .Descendants()
+                .FirstOrDefault(x => x.Name.LocalName == "GeneratePackageOnBuild");
+            XElement packageVersionElement = null;
+            if (generatePackageElement != null && generatePackageElement.Value == "true")
+                packageVersionElement = xDoc
+                    .Descendants()
+                    .FirstOrDefault(x => x.Name.LocalName == "Version");
+
+            var oldVersion = new Version(assemblyVersionElement.Value);
+
+            var isRelease = buildConfigName == "Release";
+            var minor = isRelease ? oldVersion.Minor + 1 : oldVersion.Minor;
+            var build = Convert.ToInt16(versionStringBuilder.ToString().Trim());
+            var newVersion = new Version(oldVersion.Major, minor, build);
+            var newVersionString = isRelease ? newVersion.ToString() : newVersion.ToString() + "-pre";
+
+            assemblyVersionElement.Value = newVersion.ToString();
+            fileVersionElement.Value = newVersion.ToString();
+            if (packageVersionElement != null)
             {
-                process.OutputDataReceived += (sender, e) =>
-                {
-                    if (e.Data == null)
-                        outputWaitHandle.Set();
-                    else
-                    {
-                        output.AppendLine(e.Data);
-                    }
-                };
-
-                process.Start();
-                process.BeginOutputReadLine();
-
-                if (!process.WaitForExit(timeout) || !outputWaitHandle.WaitOne(timeout)) return output;
-                return output;
+                packageVersionElement.Value = newVersionString;
+                UpdateNuspec(projectFile, newVersionString);
             }
 
+            xDoc.Save(projectFile.FullName);
+
+            return newVersionString;
         }
 
-        /// <summary>
-        /// Looks for GIT in <ui>%PATH%</ui>
-        /// </summary>
-        /// <returns>If there is GIT client installed</returns>
-        private static bool CheckGit()
+        private static void UpdateNuspec(FileInfo projectFile, string newVersionString)
         {
-            string gitPath = CheckPath("\\git", "git.exe");
-            if (string.IsNullOrEmpty(gitPath))
-            {
-                Console.WriteLine("No GIT found! Version autoincrement failed");
-                Console.ReadLine();
+            var projectDir = projectFile.Directory;
+            var nuspecFile = projectDir?.GetFiles("*.nuspec").FirstOrDefault();
+            Console.WriteLine($"debug: {nuspecFile}");
+            if (nuspecFile == null)
+                return;
+
+            var xDoc = XDocument.Load(nuspecFile.FullName);
+
+            var versionElement = xDoc.Descendants("version").FirstOrDefault();
+            if (versionElement == null)
+                throw new Exception("Wrong nuspec file format");
+            versionElement.Value = newVersionString;
+
+            xDoc.Save(nuspecFile.FullName);
+        }
+
+        private static bool IsNewStandard(FileInfo projectFile)
+        {
+            var xdoc = XDocument.Load(projectFile.FullName);
+            if (xdoc == null)
+                throw new ArgumentException(nameof(projectFile));
+
+            var oldTargetFrameworkElement = xdoc.Descendants()
+                .Where(x => x.Name.LocalName == "TargetFrameworkVersion")
+                .ToArray();
+            var newTargetFrameworkElement = xdoc.Descendants("TargetFramework")
+                .ToArray();
+
+            if (oldTargetFrameworkElement.Any())
                 return false;
-            }
-            else
-            {
-                _gitFile = Path.Combine(gitPath, "git.exe");
+            if (newTargetFrameworkElement.Any())
                 return true;
-            }
+
+            throw new ArgumentException(nameof(projectFile));
         }
 
-        /// <summary>
-        /// Searches for mention of something in <ui>%PATH%</ui> by dividing it on substrings.
-        /// 
-        /// </summary>
-        /// <param name="searchFor">Keyword</param>
-        /// <param name="binaryName">Binary file name</param>
-        /// <returns>Full path to the sought binary</returns>
-        private static string CheckPath(string searchFor, string binaryName = null)
+        private static string UpdateAssemblyInfo(string buildConfigName, string projectName, string assemblyInfoPath, StringBuilder output)
         {
-            string sysPath = string.Empty;
-            string subLine = string.Empty;
-            try
-            {
-                sysPath = System.Environment.GetEnvironmentVariable("PATH", EnvironmentVariableTarget.Machine);
-            }
-            catch (SecurityException ex)
-            {
-                Console.WriteLine($"Can\'t locate \"{searchFor}\": {ex.Message}");
-                Console.ReadLine();
-            }
-            if (string.IsNullOrEmpty(sysPath)) return null;
+            var text = File.ReadAllText(assemblyInfoPath);
 
-            if (string.IsNullOrEmpty(binaryName))
-                foreach (
-                    var line in
-                        from line in sysPath.Split(';')
-                        let found = line.ToLower().Contains(searchFor)
-                        where found
-                        select line)
-                    subLine = line;
-            else
-                foreach (string line in sysPath.Split(';').Where(l => l.ToLower().Contains(searchFor)).Where(line => File.Exists(Path.Combine(line, binaryName))))
-                    subLine = line;
+            var match = new Regex("AssemblyVersion\\(\"(.*?)\"\\)").Match(text);
+            var ver = new Version(match.Groups[1].Value);
+            var minor = buildConfigName == "Release" ? ver.Minor + 1 : ver.Minor;
+            var newVer = new Version(ver.Major, minor, Convert.ToInt16(output.ToString().Trim()));
 
-            return subLine;
+            text = Regex.Replace(text, @"AssemblyVersion\((.*?)\)", "AssemblyVersion(\"" + newVer.ToString() + "\")");
+            text = Regex.Replace(text, @"AssemblyFileVersionAttribute\((.*?)\)", "AssemblyFileVersionAttribute(\"" + newVer.ToString() + "\")");
+            text = Regex.Replace(text, @"AssemblyFileVersion\((.*?)\)", "AssemblyFileVersion(\"" + newVer.ToString() + "\")");
+
+            File.WriteAllText(assemblyInfoPath, text);
+            return newVer.ToString();
         }
     }
 }
